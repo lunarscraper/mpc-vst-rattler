@@ -1,0 +1,30 @@
+name: VST release (draft)
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version, e.g. 0.1.0
+        required: true
+        default: 0.1.0
+      dry_run:
+        description: Build only (zip + skin previews as run artifacts), no draft release
+        type: boolean
+        default: true
+
+jobs:
+  rattler:
+    uses: sd88me/mpc-vst-plugins/.github/workflows/vst-release.yml@259f75d0ce0f836cfd89cc0a33c550b55917cffc
+    permissions:
+      contents: write
+    with:
+      tag: rattler-vst-v${{ inputs.version }}
+      version: ${{ inputs.version }}
+      tools_ref: 259f75d0ce0f836cfd89cc0a33c550b55917cffc
+      vst_dir: vst
+      build: bash vst/build.sh
+      host_test: bash vst/test.sh
+      plugin_id: rattler
+      license: MIT
+      about: Paraphonic swarm synthesizer in the manner of the Eowave Quadrantid Swarm - 8 oscillators (organ, strings, drone) with spread and wavefolder into two 12 dB filters, one VCA and one AR/AD envelope; 32 preset slots with LOAD/SAVE.
+      dry_run: ${{ inputs.dry_run }}
