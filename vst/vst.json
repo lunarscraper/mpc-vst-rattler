@@ -1,0 +1,10 @@
+{
+  "name": "Rattler",
+  "vendor": "lunarscraper",
+  "uid": "Rttl",
+  "version": 1000,
+  "so": "rattler.so",
+  "module": "module.json",
+  "layout": "layout.conf",
+  "_comment": "Instrument: paraphonic swarm synthesizer in the manner of the Eowave Quadrantid Swarm (rattler_core.h). vst.json/module.json only feed mpc-vst-plugins' tools/gen_vst.py for params.h + the skin. The plugin is rattler_vst.cpp, built by this port's own build.sh."
+}

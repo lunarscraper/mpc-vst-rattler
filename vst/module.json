@@ -1,0 +1,23 @@
+{
+  "_comment": "Not a real Schwung module -- chain_params lists the VST parameters of rattler_vst.cpp so mpc-vst-plugins' tools/gen_vst.py can generate params.h + the skin. Keys must match rattler_vst.cpp (KEYS[]). Start values the plugin sets itself (start_values()). New parameters of later phases are appended before slot/load/save or after them; projects and presets restore by key.",
+  "chain_params": [
+    {"key": "model", "name": "Model", "options": ["ORGAN", "STRINGS", "DRONE"]},
+    {"key": "freq", "name": "Freq", "min": -24, "max": 24},
+    {"key": "spread", "name": "Spread", "min": 0, "max": 100},
+    {"key": "character", "name": "Character", "min": 0, "max": 100},
+    {"key": "voice_vol", "name": "Voice Vol", "min": 0, "max": 100},
+    {"key": "f1_cutoff", "name": "VCF1 Cutoff", "min": 0, "max": 100},
+    {"key": "f1_res", "name": "VCF1 Res", "min": 0, "max": 100},
+    {"key": "f1_mod", "name": "VCF1 Mod", "min": 0, "max": 100},
+    {"key": "f1_type", "name": "VCF1 Type", "options": ["LP", "HP"]},
+    {"key": "f2_cutoff", "name": "VCF2 Cutoff", "min": 0, "max": 100},
+    {"key": "f2_res", "name": "VCF2 Res", "min": 0, "max": 100},
+    {"key": "attack", "name": "Attack", "min": 0, "max": 100},
+    {"key": "decay", "name": "Decay", "min": 0, "max": 100},
+    {"key": "env_mode", "name": "Env Mode", "options": ["AR", "AD"]},
+    {"key": "volume", "name": "Volume", "min": 0, "max": 100},
+    {"key": "slot", "name": "Preset", "min": 1, "max": 32},
+    {"key": "load", "name": "Load", "access": "write"},
+    {"key": "save", "name": "Save", "access": "write"}
+  ]
+}
