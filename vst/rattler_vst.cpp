@@ -2,7 +2,7 @@
  * rattler_vst.cpp - Rattler: a paraphonic swarm synthesizer in the manner of the Eowave
  * Quadrantid Swarm as a VST2 instrument for the MPC OS plugin host (Force, MPC Live/One/X/Key),
  * armhf. The sound is rattler_core.h; this file is the plug-in around it: parameters, MIDI
- * (sample-accurate, mono: newest key, pitch bend +-2), the 32 preset slots with LOAD/SAVE
+ * (sample-accurate, mono: newest key, pitch bend +-2, CC 1-7 as on the original), the 32 preset slots with LOAD/SAVE
  * (pattern of mpc-vst-acid) and the project chunk.
  * MIT license (see ../LICENSE). "Eowave" and "Quadrantid Swarm" belong to their owners; no affiliation.
  * ========================================================================== */
@@ -70,13 +70,16 @@ enum {
     MODEL, FREQ, SPREAD, CHARACTER, VOICE_VOL,
     F1_CUTOFF, F1_RES, F1_MOD, F1_TYPE, F2_CUTOFF, F2_RES,
     ATTACK, DECAY, ENV_MODE, VOLUME,
-    SLOT, LOAD, SAVE, NKEYS
+    SLOT, LOAD, SAVE,
+    /* phase 2, appended */
+    PERC, PERC_FREQ, PERC_VOL, LFO_SPEED, LFO_SHAPE, LFO_SLEW, F2_MOD, FM_DEPTH, FM_SRC, NKEYS
 };
 static const char *const KEYS[NKEYS] = {
     "model", "freq", "spread", "character", "voice_vol",
     "f1_cutoff", "f1_res", "f1_mod", "f1_type", "f2_cutoff", "f2_res",
     "attack", "decay", "env_mode", "volume",
     "slot", "load", "save",
+    "perc", "perc_freq", "perc_vol", "lfo_speed", "lfo_shape", "lfo_slew", "f2_mod", "fm_depth", "fm_src",
 };
 static int IDX[NKEYS];
 static int KEY_OF[NPARAMS];   /* PARAMS[] position -> key enum, -1 = not ours */
@@ -101,6 +104,7 @@ struct Plugin {
     float sr = 44100;
     MidiEv ev[256];
     int nev = 0;
+    float cc[8] = {0};              /* CC 1..7, 0..1: added to the knob they belong to (not saved) */
     uint8_t held[32];               /* held keys, oldest first */
     int nheld = 0;
     std::vector<uint8_t> chunk;
@@ -158,13 +162,19 @@ static float sq(float x) { return x * x; }
 static float law_time(float x, float lo, float ratio) { return lo * std::pow(ratio, x); }
 static float law_cutoff_oct(float x) { return x * 9.8137812f; }          /* 20 Hz .. 18 kHz */
 static float law_mod_oct(float x) { return 8.0f * x; }                    /* envelope -> VCF 1 */
+static float law_perc_s(float x) { return 0.003f * std::pow(333.0f, x); }    /* 3 ms .. 1 s */
+static float law_perc_hz(float x) { return 60.0f * std::pow(133.0f, x); }    /* 60 Hz .. 8 kHz */
+static float law_lfo_hz(float x) { return 0.05f * std::pow(1000.0f, x); }    /* 0.05 .. 50 Hz */
+/* a knob plus its controller (README: CC 1 LFO speed, 2 spread, 3 character, 4 perc, 5 attack,
+ * 6 decay, 7 volume - the CC value is added to the knob) */
+static float pcc(Plugin *w, int k, int cc) { return clamp01(pct(w, k) + w->cc[cc]); }
 
 static void configure(Plugin *w) {
     rattler::Patch &p = w->patch;
     p.model = clampi((int)val(w, MODEL), 0, rattler::NMODELS - 1);
     p.semis = std::round(val(w, FREQ));
-    p.spread = pct(w, SPREAD);
-    p.character = pct(w, CHARACTER);
+    p.spread = pcc(w, SPREAD, 2);
+    p.character = pcc(w, CHARACTER, 3);
     p.voice = 2 * sq(pct(w, VOICE_VOL));
     p.f1_oct = law_cutoff_oct(pct(w, F1_CUTOFF));
     p.f1_res = pct(w, F1_RES);
@@ -172,10 +182,19 @@ static void configure(Plugin *w) {
     p.f1_hp = sw(w, F1_TYPE);
     p.f2_oct = law_cutoff_oct(pct(w, F2_CUTOFF));
     p.f2_res = pct(w, F2_RES);
-    p.att = law_time(pct(w, ATTACK), 0.001f, 5000);
-    p.dec = law_time(pct(w, DECAY), 0.005f, 2000);
+    p.att = law_time(pcc(w, ATTACK, 5), 0.001f, 5000);
+    p.dec = law_time(pcc(w, DECAY, 6), 0.005f, 2000);
     p.ad = sw(w, ENV_MODE);
-    p.volume = sq(pct(w, VOLUME));
+    p.volume = sq(pcc(w, VOLUME, 7));
+    p.perc_dec = law_perc_s(pcc(w, PERC, 4));
+    p.perc_hz = law_perc_hz(pct(w, PERC_FREQ));
+    p.perc = 2 * sq(pct(w, PERC_VOL));
+    p.lfo_hz = law_lfo_hz(pcc(w, LFO_SPEED, 1));
+    p.lfo_shape = clampi((int)val(w, LFO_SHAPE), 0, rattler::NLFO - 1);
+    p.lfo_slew = sq(pct(w, LFO_SLEW));
+    p.f2_mod = 4 * pct(w, F2_MOD);
+    p.fm = 4 * sq(pct(w, FM_DEPTH));
+    p.fm_src = clampi((int)val(w, FM_SRC), 0, 2);
     w->engine.set_patch(p);
 }
 
@@ -187,6 +206,9 @@ static void start_values(Plugin *w) {
     start(w, F2_CUTOFF, 85); start(w, F2_RES, 0);
     start(w, ATTACK, 30); start(w, DECAY, 60); start(w, ENV_MODE, 0);
     start(w, VOLUME, 80);
+    start(w, PERC, 40); start(w, PERC_FREQ, 50); start(w, PERC_VOL, 0);
+    start(w, LFO_SPEED, 40); start(w, LFO_SHAPE, 0); start(w, LFO_SLEW, 0); start(w, F2_MOD, 0);
+    start(w, FM_DEPTH, 0); start(w, FM_SRC, 0);
 }
 
 /* ---- state as text: "key=value;" for every sound parameter. Used for the project chunk
@@ -244,6 +266,15 @@ static const struct { const char *name, *state; } FACTORY[] = {
     {"METAL PLUCK", "model=2;freq=0;spread=78;character=45;voice_vol=75;f1_cutoff=38;f1_res=45;f1_mod=65;f1_type=0;f2_cutoff=88;f2_res=15;attack=0;decay=44;env_mode=1;volume=80;"},
     {"THIN CLUSTER", "model=1;freq=0;spread=60;character=65;voice_vol=75;f1_cutoff=60;f1_res=35;f1_mod=25;f1_type=1;f2_cutoff=88;f2_res=20;attack=0;decay=52;env_mode=1;volume=85;"},
     {"DEEP BEATING", "model=0;freq=-12;spread=8;character=30;voice_vol=75;f1_cutoff=50;f1_res=55;f1_mod=15;f1_type=0;f2_cutoff=65;f2_res=40;attack=62;decay=76;env_mode=0;volume=85;"},
+    /* phase 2: keys the state leaves out stay at their start values */
+    {"PERC TICK", "voice_vol=0;perc=22;perc_freq=72;perc_vol=85;f1_cutoff=100;f1_res=0;f1_mod=0;f2_cutoff=100;attack=0;decay=40;env_mode=1;volume=85;"},
+    {"PERC TOM", "voice_vol=0;perc=58;perc_freq=14;perc_vol=90;f1_cutoff=70;f1_res=10;f1_mod=20;f2_cutoff=90;attack=0;decay=58;env_mode=1;volume=90;"},
+    {"PERC HAT", "voice_vol=0;perc=34;perc_freq=96;perc_vol=85;f1_cutoff=70;f1_res=20;f1_mod=0;f1_type=1;f2_cutoff=100;attack=0;decay=42;env_mode=1;volume=85;"},
+    {"METAL HIT", "model=4;spread=64;character=55;voice_vol=70;perc=30;perc_freq=60;perc_vol=70;f1_cutoff=55;f1_res=30;f1_mod=45;f2_cutoff=95;attack=0;decay=55;env_mode=1;volume=85;"},
+    {"NOISE SNARE", "model=7;freq=12;spread=40;character=15;voice_vol=60;perc=45;perc_freq=30;perc_vol=80;f1_cutoff=85;f1_res=10;f1_mod=10;f2_cutoff=95;attack=0;decay=46;env_mode=1;volume=85;"},
+    {"CHIP SWARM", "model=5;spread=10;character=80;voice_vol=65;f1_cutoff=75;f1_res=15;f1_mod=15;f2_cutoff=90;attack=5;decay=45;env_mode=0;volume=75;"},
+    {"GRAIN CLOUD", "model=6;freq=12;spread=45;character=60;voice_vol=80;f1_cutoff=80;f1_res=20;f1_mod=0;f2_cutoff=70;f2_res=35;f2_mod=40;lfo_speed=30;lfo_shape=5;attack=60;decay=75;env_mode=0;volume=85;"},
+    {"REED RANDOM", "model=3;freq=-12;spread=18;character=25;voice_vol=70;f1_cutoff=70;f1_res=25;f1_mod=10;f2_cutoff=50;f2_res=60;f2_mod=55;lfo_speed=62;lfo_shape=4;lfo_slew=20;attack=20;decay=60;env_mode=0;volume=80;"},
 };
 enum { NFACTORY = (int)(sizeof FACTORY / sizeof FACTORY[0]) };
 
@@ -356,6 +387,9 @@ static void midi(Plugin *w, const uint8_t *d) {
         else w->engine.note_on(w->held[k - 1], false);  /* back to the key still held, no new attack */
     } else if (st == 0xe0) {
         w->engine.set_bend(((((int)d[2] & 0x7f) << 7 | (d[1] & 0x7f)) - 8192) * (2.0f / 8192.0f));
+    } else if (st == 0xb0 && n >= 1 && n <= 7) {
+        w->cc[n] = (d[2] & 0x7f) / 127.0f;
+        configure(w);
     } else if (st == 0xb0 && (n == 120 || n == 123)) {
         all_off(w);
     }
@@ -503,6 +537,10 @@ static void display(Plugin *w, int idx, char *buf, size_t n) {
     case F1_CUTOFF: case F2_CUTOFF: fmt_hz(buf, n, 20 * std::pow(2.0f, law_cutoff_oct(x))); break;
     case ATTACK: fmt_time(buf, n, law_time(x, 0.001f, 5000)); break;
     case DECAY: fmt_time(buf, n, law_time(x, 0.005f, 2000)); break;
+    case PERC: fmt_time(buf, n, law_perc_s(x)); break;
+    case PERC_FREQ: fmt_hz(buf, n, law_perc_hz(x)); break;
+    case LFO_SPEED: if (law_lfo_hz(x) < 1) std::snprintf(buf, n, "%.2f Hz", law_lfo_hz(x)); else fmt_hz(buf, n, law_lfo_hz(x)); break;
+    case LFO_SLEW: fmt_time(buf, n, sq(x)); break;
     default: std::snprintf(buf, n, "%d %%", u); break;
     }
 }
@@ -552,7 +590,7 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
         return 1;
     }
     case effSetSampleRate:
-        if (o > 0) { w->sr = o; w->engine.init(o); all_off(w); w->dirty.store(true); }
+        if (o > 0) { w->sr = o; w->engine.init(o); all_off(w); std::memset(w->cc, 0, sizeof w->cc); w->dirty.store(true); }
         return 1;
     case effSetBlockSize: return 1;
     case effMainsChanged: if (!v) all_off(w); return 1;

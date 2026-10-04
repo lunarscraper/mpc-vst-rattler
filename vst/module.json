@@ -1,7 +1,7 @@
 {
-  "_comment": "Not a real Schwung module -- chain_params lists the VST parameters of rattler_vst.cpp so mpc-vst-plugins' tools/gen_vst.py can generate params.h + the skin. Keys must match rattler_vst.cpp (KEYS[]). Start values the plugin sets itself (start_values()). New parameters of later phases are appended before slot/load/save or after them; projects and presets restore by key.",
+  "_comment": "Not a real Schwung module -- chain_params lists the VST parameters of rattler_vst.cpp so mpc-vst-plugins' tools/gen_vst.py can generate params.h + the skin. Keys must match rattler_vst.cpp (KEYS[]). Start values the plugin sets itself (start_values()). New parameters of later phases are appended (parameter numbers of earlier phases stay); projects and presets restore by key.",
   "chain_params": [
-    {"key": "model", "name": "Model", "options": ["ORGAN", "STRINGS", "DRONE"]},
+    {"key": "model", "name": "Model", "options": ["ORGAN", "STRINGS", "DRONE", "REED", "METAL", "CHIPTUNE", "GRAINS", "NOISE"]},
     {"key": "freq", "name": "Freq", "min": -24, "max": 24},
     {"key": "spread", "name": "Spread", "min": 0, "max": 100},
     {"key": "character", "name": "Character", "min": 0, "max": 100},
@@ -18,6 +18,15 @@
     {"key": "volume", "name": "Volume", "min": 0, "max": 100},
     {"key": "slot", "name": "Preset", "min": 1, "max": 32},
     {"key": "load", "name": "Load", "access": "write"},
-    {"key": "save", "name": "Save", "access": "write"}
+    {"key": "save", "name": "Save", "access": "write"},
+    {"key": "perc", "name": "Perc", "min": 0, "max": 100},
+    {"key": "perc_freq", "name": "Perc Freq", "min": 0, "max": 100},
+    {"key": "perc_vol", "name": "Perc Vol", "min": 0, "max": 100},
+    {"key": "lfo_speed", "name": "LFO Speed", "min": 0, "max": 100},
+    {"key": "lfo_shape", "name": "LFO Shape", "options": ["TRIANGLE", "SINE", "RAMP DOWN", "RAMP UP", "RANDOM 1", "RANDOM 2", "RANDOM 3"]},
+    {"key": "lfo_slew", "name": "LFO Slew", "min": 0, "max": 100},
+    {"key": "f2_mod", "name": "VCF2 Mod", "min": 0, "max": 100},
+    {"key": "fm_depth", "name": "Freq Mod", "min": 0, "max": 100},
+    {"key": "fm_src", "name": "Freq Mod Source", "options": ["LFO", "ENV", "DUAL"]}
   ]
 }

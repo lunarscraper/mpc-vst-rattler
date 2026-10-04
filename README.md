@@ -2,7 +2,7 @@
 
 **Rattler** (Arbeitstitel) – paraphoner Schwarm-Synthesizer als VST2-Plugin für die Akai Force, nachempfunden nach dem Eowave Quadrantid Swarm.
 
-**Status:** Phase 1 (Grundstimme) umgesetzt, Test auf der Force steht aus. Phase 2 und 3 offen. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
+**Status:** Phase 1 (Grundstimme) läuft auf der Force. Phase 2 (Charakter) umgesetzt, Test auf der Force steht aus. Phase 3 offen. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
 
 ## Ziel
 
@@ -150,7 +150,7 @@ Die Preset-Verwaltung kommt von Anfang an nach Acid-Muster hinein.
 
 **Fertig, wenn:** Sequencer läuft stabil zur Clock, Poly mit 8 Noten ohne Aussetzer, Feedback lässt sich ohne Pegelexplosion aufdrehen (Limiter im Feedback-Weg).
 
-## Stand Phase 1
+## Stand Phase 1 und 2
 
 Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hülle, MIDI, Speicherplätze). Handgeschriebene VST2-Hülle ohne Wrapper wie beim carp 2000, Build über den gemeinsamen Workflow von `sd88me/mpc-vst-plugins`.
 
@@ -158,9 +158,13 @@ Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hül
 
 | Seite | Regler 1–4 | Regler 5–8 |
 |---|---|---|
-| VOICE | Model, Freq (± 24 Halbtöne), Spread, Character | Voice Vol, Attack, Decay/Release, Envelope (AR/AD) |
-| FILTER | VCF 1 Cutoff, VCF 1 Res, VCF 1 Env Mod, VCF 1 Type (LP/HP) | VCF 2 Cutoff, VCF 2 Res, –, Volume |
+| VOICE | Model, Freq (± 24 Halbtöne), Spread, Character | Voice Vol, Freq Mod, Freq Mod Source, Volume |
+| PERC | Perc (Decay-Länge), Perc Freq, Perc Vol, Voice Vol | Attack, Decay/Release, Envelope (AR/AD), Volume |
+| FILTER | VCF 1 Cutoff, VCF 1 Res, VCF 1 Env Mod, VCF 1 Type (LP/HP) | VCF 2 Cutoff, VCF 2 Res, VCF 2 LFO Mod, LFO Speed |
+| LFO | Speed, Shape, Slew, VCF 2 LFO Mod | Freq Mod, Freq Mod Source |
 | PRESET | Preset (1–32), LOAD, SAVE | |
+
+Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve auf einer Seite spielbar ist.
 
 ### Festlegungen in Phase 1
 
@@ -170,6 +174,21 @@ Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hül
 - **Hüllkurve:** jede neue Taste löst sie aus (wie ein Gate am Original), Anschlagstärke bleibt ohne Wirkung. AD läuft auch bei gehaltener Taste ab.
 - **Mono:** die zuletzt gedrückte Taste gilt, Pitch Bend ± 2 Halbtöne.
 - **Speicherplätze:** 32 Plätze nach Acid-Muster, zugleich die VST-Programme (Preset-Liste der Force). Der Preset-Regler blättert nur, LOAD lädt, SAVE speichert. Plätze 1–8 sind mit Werksklängen belegt, bis SAVE sie überschreibt. Datei: `rattler_presets.txt` neben dem Plugin-Ordner, gemeinsam für alle Instanzen und Projekte.
+
+### Festlegungen in Phase 2
+
+- **Percussion:** gefiltertes Rauschen (Bandpass) plus kurzer Sinus-Ton auf der Bandpass-Frequenz, eigene Decay-Hüllkurve, ausgelöst mit jeder Taste. `Perc` 3 ms bis 1 s, `Perc Freq` 60 Hz bis 8 kHz. Die Tonhöhe folgt **nicht** der gespielten Note. Die Percussion läuft wie im Original durch Filter und VCA: Sie ist nur so lange zu hören, wie die Haupthüllkurve offen ist. Für reine Percussion `Voice Vol` auf 0 stellen (dann rechnen die VCOs auch nicht mit).
+- **Freq Mod:** ein Tiefenregler (bis ± 4 Oktaven) mit Quellenwahl `LFO` / `ENV` / `DUAL`. Am Original fest am LFO, die Hüllkurve nur über Patchpunkte. Der LFO geht ungeglättet (vor dem Slew) in die Tonhöhe.
+- **Reed:** je Stimme zwei Rechteck-Oszillatoren, der zweite rund 10 Cent höher.
+- **Metal:** 9. Oszillator auf dem 2,76-Fachen der gespielten Note, Character regelt die FM-Tiefe.
+- **Chiptune:** jeder der 8 Pulse hat eine eigene langsame Pulsbreiten-Modulation (0,3 bis 1,5 Hz), Character regelt die Tiefe.
+- **Grains:** rund 30 Wavelets pro Sekunde und Generator, Länge zufällig, jedes vierte fällt aus.
+- **Noise:** 8 Sample-&-Hold-Rauschquellen, getaktet mit dem 6-Fachen der jeweiligen VCO-Frequenz.
+- **Kurzes Delay** (Grains, Noise): 30 ms, Feedback 50 %, Character regelt den Anteil.
+- **LFO:** 0,05 bis 50 Hz. Random 1: neue Stufe pro Durchlauf. Random 2: gleitet zwischen Zufallswerten. Random 3: Stufen in unregelmäßigen Abständen. Slew bis 1 s. Shape „Seq" kommt mit dem Sequencer in Phase 3.
+- **MIDI-CC 1–7:** wie im Original zum Reglerwert addiert, nicht gespeichert. Sendet die Force auf der Spur CC7 (Lautstärke), hebt das den Volume-Regler an.
+- Die Konstanten zu Reed, Metal, Grains, Noise und Delay stehen oben in `rattler_core.h`.
+- Plätze 9–16 haben Werksklänge zu Phase 2 (drei reine Percussion-Klänge, die neuen Modelle), solange dort nichts gespeichert ist.
 
 ### Bauen und testen
 
@@ -185,7 +204,7 @@ Das Handbuch lässt Folgendes offen, hier hilft nur Hören am Original oder an D
 4. **Kurzes Delay** bei Grains und Noise: Delayzeit, Feedback ja/nein.
 5. **Random 1–3:** Worin sich die drei Zufallsformen des LFO unterscheiden.
 6. **Metal:** Frequenz des 9. Oszillators relativ zu den anderen.
-7. **Freq Mod:** Im Original ein CV-Eingang mit Abschwächer. Welche Quelle im Plugin – LFO, Hüllkurve, Noise oder wählbar?
+7. ~~**Freq Mod:** Welche Quelle im Plugin?~~ Entschieden: Quellenwahl `LFO` / `ENV` / `DUAL` mit einem Tiefenregler.
 8. **Federhall:** Reicht der carp-2000-Hall, oder braucht es mehr „Scheppern"?
 
 ## Referenzen

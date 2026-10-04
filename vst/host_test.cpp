@@ -1,6 +1,7 @@
 /* Offline x86 test of rattler_vst.cpp (test.sh builds it with ASan/UBSan): silence without a
  * key, tuning (FREQ, pitch bend), SPREAD (harmonic partials, inharmonic drone), CHARACTER
- * (wavefolder), both filters (LP darkens, HP removes the fundamental), the envelope (AR holds
+ * (wavefolder, and what it does in each of the other models), the percussion voice, the LFO
+ * on VCF 2, FREQ MOD from LFO and envelope, CC 1-7, both filters (LP darkens, HP removes the fundamental), the envelope (AR holds
  * and releases, AD decays under a held key), mono key handling, the 32 preset slots (program
  * list, factory sounds, SAVE/LOAD, shared bank file), output ceiling, chunk restore, a random
  * parameter/MIDI stress run, NaN/denormal-free output.
@@ -55,7 +56,9 @@ static void set(AEffect *e, const char *name, double v) {
     double lo = 0, hi = 100;
     const std::string s = name;
     if (s == "Freq") { lo = -24; hi = 24; }
-    else if (s == "Model") { hi = 2; }
+    else if (s == "Model") { hi = 7; }
+    else if (s == "LFO Shape") { hi = 6; }
+    else if (s == "Freq Mod Source") { hi = 2; }
     else if (s == "VCF1 Type" || s == "Env Mode" || s == "Load" || s == "Save") { hi = 1; }
     else if (s == "Preset") { lo = 1; hi = 32; }
     e->setParameter(e, param(e, name), (float)((v - lo) / (hi - lo)));
@@ -113,6 +116,10 @@ static void plain(AEffect *e, int model) {
     set(e, "VCF1 Cutoff", 100); set(e, "VCF1 Res", 0); set(e, "VCF1 Mod", 0); set(e, "VCF1 Type", 0);
     set(e, "VCF2 Cutoff", 100); set(e, "VCF2 Res", 0);
     set(e, "Attack", 0); set(e, "Decay", 20); set(e, "Env Mode", 0); set(e, "Volume", 80);
+    set(e, "Perc", 40); set(e, "Perc Freq", 50); set(e, "Perc Vol", 0);
+    set(e, "LFO Speed", 40); set(e, "LFO Shape", 0); set(e, "LFO Slew", 0); set(e, "VCF2 Mod", 0);
+    set(e, "Freq Mod", 0); set(e, "Freq Mod Source", 0);
+    for (int c = 1; c <= 7; c++) send(e, 0xb0, c, 0);
     send(e, 0xe0, 0, 64); send(e, 0xb0, 123, 0);
 }
 static Buf note(AEffect *e, int n, double sec) { on(e, n); Buf a = run(e, sec); off(e, n); run(e, 1.0); return a; }
@@ -134,9 +141,11 @@ int main(int argc, char **argv) {
     if (argc > 2 && !std::strcmp(argv[2], "bench")) {
         struct { const char *what; int model; double spread, chr; } B[] = {
             {"ORGAN, spread 30", 0, 30, 0}, {"STRINGS, spread 30, folded", 1, 30, 70}, {"DRONE, full spread, folded", 2, 100, 70},
+            {"REED (16 VCOs), folded", 3, 30, 70}, {"METAL, FM", 4, 60, 70}, {"CHIPTUNE, PWM", 5, 30, 70}, {"GRAINS, delay", 6, 50, 70}, {"NOISE, delay", 7, 50, 70},
         };
         for (auto &b : B) {
             plain(e, b.model); set(e, "Spread", b.spread); set(e, "Character", b.chr); set(e, "VCF1 Res", 50); set(e, "VCF1 Mod", 50);
+            set(e, "Perc Vol", 80); set(e, "Perc", 100); set(e, "VCF2 Mod", 50); set(e, "Freq Mod", 20);
             on(e, 48);
             auto t0 = std::chrono::steady_clock::now();
             run(e, 20.0);
@@ -194,6 +203,86 @@ int main(int argc, char **argv) {
         CHECK(goertzel(a1, 660) + goertzel(a1, 1100) > 8 * (goertzel(a0, 660) + goertzel(a0, 1100)), "character adds no harmonics");
     }
 
+    /* 4b. the five other models: each sounds, and CHARACTER does what its table row says */
+    {
+        const char *names[] = {"REED", "METAL", "CHIPTUNE", "GRAINS", "NOISE"};
+        for (int m = 3; m <= 7; m++) {
+            plain(e, m); set(e, "Spread", 20);
+            Buf a0 = note(e, 57, 1.5);
+            set(e, "Character", 80);
+            Buf a1 = note(e, 57, 1.5);
+            double diff = 0;
+            for (double f : {330.0, 440.0, 660.0, 880.0, 1100.0, 1760.0, 3520.0}) diff += std::fabs(db(goertzel(a1, f)) - db(goertzel(a0, f)));
+            std::printf("  %-8s %6.1f dBFS, character 80: %6.1f dBFS, spectrum moves %.0f dB\n", names[m - 3], db(rms(a0)), db(rms(a1)), diff);
+            CHECK(display(e, "Model") == names[m - 3], "model name %s", display(e, "Model").c_str());
+            CHECK(rms(a0) > 0.01 && rms(a1) > 0.01, "%s silent", names[m - 3]);
+            CHECK(diff > 12, "%s: character does nothing", names[m - 3]);
+        }
+        plain(e, 3);                                    /* REED: the pair beats (about 10 cents apart) */
+        Buf r = note(e, 69, 1.0);
+        CHECK(goertzel(r, 440 * 1.006) > 0.3 * goertzel(r, 440) && goertzel(r, 440) > 0.01, "reed has no detuned second VCO");
+    }
+
+    /* 4c. percussion: fires with every key, PERC sets its length, PERC FREQ its pitch; silent at PERC VOL 0 */
+    {
+        plain(e, 0); set(e, "Voice Vol", 0); set(e, "Decay", 80);
+        on(e, 60); CHECK(peak(run(e, 0.5)) == 0, "sound with both mixer channels closed"); off(e, 60); run(e, 0.5);
+        set(e, "Perc Vol", 80); set(e, "Perc", 20);
+        on(e, 60); Buf shortp = run(e, 1.0); off(e, 60);
+        set(e, "Perc", 90);
+        on(e, 60); Buf longp = run(e, 1.0); off(e, 60);
+        std::printf("  perc: short %.1f / %.1f dB (first 10 ms / 200-300 ms), long %.1f / %.1f dB, %s, %s\n", db(rms(shortp, 0, 0.01)), db(rms(shortp, 0.2, 0.3)),
+                    db(rms(longp, 0, 0.01)), db(rms(longp, 0.2, 0.3)), display(e, "Perc").c_str(), display(e, "Perc Freq").c_str());
+        CHECK(rms(shortp, 0, 0.01) > 0.05 && rms(shortp, 0.2, 0.3) < 1e-3, "short percussion wrong");
+        CHECK(rms(longp, 0.2, 0.3) > 30 * rms(shortp, 0.2, 0.3) + 1e-3, "PERC does not lengthen the decay");
+        set(e, "Perc", 60); set(e, "Perc Freq", 10);
+        on(e, 60); Buf lowp = run(e, 0.5); off(e, 60);
+        set(e, "Perc Freq", 95);
+        on(e, 60); Buf highp = run(e, 0.5); off(e, 60);
+        auto band = [](const Buf &a, double f0, double f1) { double s = 0; for (double f = f0; f < f1; f *= 1.06) s += goertzel(a, f, 0); return s; };
+        CHECK(band(lowp, 60, 200) > 5 * band(lowp, 3000, 9000) && band(highp, 3000, 9000) > 3 * band(highp, 60, 200), "PERC FREQ does not move the percussion");
+        on(e, 60); run(e, 0.3); on(e, 64); Buf again = run(e, 0.05); off(e, 64); off(e, 60);
+        CHECK(rms(again, 0, 0.01) > 0.05, "a second key does not fire the percussion");
+        run(e, 12.0);
+    }
+
+    /* 4d. LFO -> VCF 2, FREQ MOD (LFO / ENV / DUAL), CC 1-7 */
+    {
+        plain(e, 1); set(e, "VCF2 Cutoff", 45); set(e, "LFO Speed", 55);   /* about 2.2 Hz */
+        on(e, 45); Buf still = run(e, 3.0);
+        set(e, "VCF2 Mod", 80);
+        Buf moving = run(e, 3.0); off(e, 45); run(e, 1.0);
+        auto swing = [](const Buf &a) { double lo = 1e9, hi = 0; for (double t = 0.5; t < 2.9; t += 0.05) { double r = rms(a, t, t + 0.05); lo = std::min(lo, r); hi = std::max(hi, r); } return hi / (lo + 1e-9); };
+        std::printf("  LFO on VCF 2: level swing %.2f -> %.2f\n", swing(still), swing(moving));
+        CHECK(swing(moving) > 2 && swing(still) < 1.3, "LFO does not move VCF 2");
+        for (int sh = 0; sh < 7; sh++) { set(e, "LFO Shape", sh); set(e, "LFO Slew", sh * 15); on(e, 45); CHECK(rms(run(e, 1.0)) > 1e-3, "LFO shape %d silent", sh); off(e, 45); run(e, 0.5); }
+        CHECK(display(e, "LFO Shape") == "RANDOM 3", "LFO shape name");
+
+        plain(e, 0); set(e, "Freq Mod", 50); set(e, "Freq Mod Source", 1);   /* ENV: one octave up while the key is held (AR) */
+        double c = cents(freq(note(e, 57, 1.0), 440), 440);
+        CHECK(std::fabs(c) < 10 && display(e, "Freq Mod Source") == "ENV", "FREQ MOD from the envelope: %.1f cents", c);
+        set(e, "Freq Mod Source", 0); set(e, "LFO Speed", 0); set(e, "LFO Shape", 3);   /* LFO: a slow ramp bends the pitch */
+        on(e, 57); Buf b1 = run(e, 0.5), b2 = run(e, 2.0); off(e, 57); run(e, 1.0);
+        double fa = 0, fb = 0, ga = 0, gb = 0;
+        for (double f = 100; f < 500; f *= 1.002) { double g = goertzel(b1, f, 0.1); if (g > ga) { ga = g; fa = f; } g = goertzel(Buf(b2.end() - 22050, b2.end()), f, 0.1); if (g > gb) { gb = g; fb = f; } }
+        CHECK(fb > fa * 1.01 && fa < 215, "FREQ MOD from the LFO: %.1f Hz -> %.1f Hz", fa, fb);
+        set(e, "Freq Mod Source", 2);
+        CHECK(display(e, "Freq Mod Source") == "DUAL" && rms(note(e, 57, 0.5)) > 0.01, "FREQ MOD DUAL");
+
+        plain(e, 0);                                    /* CC 2 adds to SPREAD: partial 3 appears */
+        Buf c0 = note(e, 57, 1.0);
+        send(e, 0xb0, 2, 127);
+        Buf c1 = note(e, 57, 1.0);
+        CHECK(goertzel(c1, 660) > 10 * goertzel(c0, 660), "CC 2 does not add to spread");
+        send(e, 0xb0, 2, 0); send(e, 0xb0, 7, 0);
+        set(e, "Volume", 20);
+        Buf v0 = note(e, 57, 0.5);
+        send(e, 0xb0, 7, 127);
+        Buf v1 = note(e, 57, 0.5);
+        CHECK(rms(v1) > 5 * rms(v0), "CC 7 does not add to volume");
+        for (int k = 1; k <= 7; k++) send(e, 0xb0, k, 0);
+    }
+
     /* 5. filters */
     {
         plain(e, 1);
@@ -234,7 +323,7 @@ int main(int argc, char **argv) {
     {
         CHECK(e->numPrograms == 32, "numPrograms %d", e->numPrograms);
         CHECK(progname(e, 0) == "STRING SWARM" && progname(e, 31) == "32 (empty)", "program names: %s / %s", progname(e, 0).c_str(), progname(e, 31).c_str());
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 16; i++) {
             e->dispatcher(e, 2, 0, i, nullptr, 0);
             on(e, 48); Buf a = run(e, 2.0); off(e, 48); Buf tl = run(e, 12.0);
             std::printf("  preset %-15s 2 s %6.1f dBFS, peak %.3f\n", progname(e, i).c_str(), db(rms(a, 0)), peak(a));
@@ -271,9 +360,9 @@ int main(int argc, char **argv) {
     }
 
     /* 8. everything up: stays below 0 dBFS */
-    for (int m = 0; m < 3; m++) {
+    for (int m = 0; m < 8; m++) {
         plain(e, m);
-        for (const char *k : {"Voice Vol", "Volume", "VCF1 Res", "VCF2 Res", "Character", "Spread"}) set(e, k, 100);
+        for (const char *k : {"Voice Vol", "Volume", "VCF1 Res", "VCF2 Res", "Character", "Spread", "Perc Vol", "Perc"}) set(e, k, 100);
         set(e, "VCF1 Cutoff", 60); set(e, "VCF2 Cutoff", 60);
         on(e, 40, 127); double pk = peak(run(e, 1.0)); off(e, 40); run(e, 1.0);
         std::printf("  hot (model %d): peak %.3f\n", m, pk);
