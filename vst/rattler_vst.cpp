@@ -2,8 +2,9 @@
  * rattler_vst.cpp - Rattler: a paraphonic swarm synthesizer in the manner of the Eowave
  * Quadrantid Swarm as a VST2 instrument for the MPC OS plugin host (Force, MPC Live/One/X/Key),
  * armhf. The sound is rattler_core.h; this file is the plug-in around it: parameters, MIDI
- * (sample-accurate, mono: newest key, pitch bend +-2, CC 1-7 as on the original), the 32 preset slots with LOAD/SAVE
- * (pattern of mpc-vst-acid) and the project chunk.
+ * (sample-accurate, mono: newest key, poly: one VCO per key, pitch bend +-2, CC 1-7 as on the
+ * original), the 8-step sequencer on the host clock, the 32 preset slots with LOAD/SAVE (pattern
+ * of mpc-vst-acid) and the project chunk.
  * MIT license (see ../LICENSE). "Eowave" and "Quadrantid Swarm" belong to their owners; no affiliation.
  * ========================================================================== */
 #include <algorithm>
@@ -72,7 +73,11 @@ enum {
     ATTACK, DECAY, ENV_MODE, VOLUME,
     SLOT, LOAD, SAVE,
     /* phase 2, appended */
-    PERC, PERC_FREQ, PERC_VOL, LFO_SPEED, LFO_SHAPE, LFO_SLEW, F2_MOD, FM_DEPTH, FM_SRC, NKEYS
+    PERC, PERC_FREQ, PERC_VOL, LFO_SPEED, LFO_SHAPE, LFO_SLEW, F2_MOD, FM_DEPTH, FM_SRC,
+    /* phase 3, appended */
+    REV_IN, REV_LEVEL, REV_FB, REV_PRE, MODE, SEQ_RUN, SEQ_CLOCK,
+    SEQ_P1, SEQ_P2, SEQ_P3, SEQ_P4, SEQ_P5, SEQ_P6, SEQ_P7, SEQ_P8,
+    SEQ_G1, SEQ_G2, SEQ_G3, SEQ_G4, SEQ_G5, SEQ_G6, SEQ_G7, SEQ_G8, NKEYS
 };
 static const char *const KEYS[NKEYS] = {
     "model", "freq", "spread", "character", "voice_vol",
@@ -80,6 +85,9 @@ static const char *const KEYS[NKEYS] = {
     "attack", "decay", "env_mode", "volume",
     "slot", "load", "save",
     "perc", "perc_freq", "perc_vol", "lfo_speed", "lfo_shape", "lfo_slew", "f2_mod", "fm_depth", "fm_src",
+    "rev_in", "rev_level", "rev_fb", "rev_pre", "mode", "seq_run", "seq_clock",
+    "seq_p1", "seq_p2", "seq_p3", "seq_p4", "seq_p5", "seq_p6", "seq_p7", "seq_p8",
+    "seq_g1", "seq_g2", "seq_g3", "seq_g4", "seq_g5", "seq_g6", "seq_g7", "seq_g8",
 };
 static int IDX[NKEYS];
 static int KEY_OF[NPARAMS];   /* PARAMS[] position -> key enum, -1 = not ours */
@@ -105,6 +113,12 @@ struct Plugin {
     MidiEv ev[256];
     int nev = 0;
     float cc[8] = {0};              /* CC 1..7, 0..1: added to the knob they belong to (not saved) */
+    /* the sequencer (see "sequencer" below) */
+    bool poly = false, seq_on = false, was_playing = false;
+    int seq_pitch[8] = {0}, seq_i = 0, gate_off = 0;
+    bool seq_gate[8] = {true, true, true, true, true, true, true, true};
+    double seq_beats = 0.25, tempo = 120, to_next = 0;
+    long long seq_abs = -1;
     uint8_t held[32];               /* held keys, oldest first */
     int nheld = 0;
     std::vector<uint8_t> chunk;
@@ -169,6 +183,7 @@ static float law_lfo_hz(float x) { return 0.05f * std::pow(1000.0f, x); }    /* 
  * 6 decay, 7 volume - the CC value is added to the knob) */
 static float pcc(Plugin *w, int k, int cc) { return clamp01(pct(w, k) + w->cc[cc]); }
 
+static void all_off(Plugin *w);
 static void configure(Plugin *w) {
     rattler::Patch &p = w->patch;
     p.model = clampi((int)val(w, MODEL), 0, rattler::NMODELS - 1);
@@ -195,6 +210,20 @@ static void configure(Plugin *w) {
     p.f2_mod = 4 * pct(w, F2_MOD);
     p.fm = 4 * sq(pct(w, FM_DEPTH));
     p.fm_src = clampi((int)val(w, FM_SRC), 0, 2);
+    p.rev_in = 1.5f * sq(pct(w, REV_IN));
+    p.rev_level = 1.5f * sq(pct(w, REV_LEVEL));
+    p.rev_fb = 1.5f * pct(w, REV_FB);
+    p.rev_pre = sw(w, REV_PRE);
+    p.poly = sw(w, MODE);
+    static const double BEATS[6] = {1.0, 0.5, 1.0 / 3, 0.25, 1.0 / 6, 0.125};   /* 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32 */
+    w->seq_beats = BEATS[clampi((int)val(w, SEQ_CLOCK), 0, 5)];
+    for (int i = 0; i < 8; i++) {
+        w->seq_pitch[i] = (int)std::lround(val(w, SEQ_P1 + i));
+        w->seq_gate[i] = sw(w, SEQ_G1 + i);
+        p.seq[i] = w->seq_pitch[i] / 24.0f;
+    }
+    const bool seq_on = sw(w, SEQ_RUN) && !p.poly;   /* the sequencer plays the mono voice */
+    if (p.poly != w->poly || seq_on != w->seq_on) { all_off(w); w->poly = p.poly; w->seq_on = seq_on; }
     w->engine.set_patch(p);
 }
 
@@ -209,6 +238,9 @@ static void start_values(Plugin *w) {
     start(w, PERC, 40); start(w, PERC_FREQ, 50); start(w, PERC_VOL, 0);
     start(w, LFO_SPEED, 40); start(w, LFO_SHAPE, 0); start(w, LFO_SLEW, 0); start(w, F2_MOD, 0);
     start(w, FM_DEPTH, 0); start(w, FM_SRC, 0);
+    start(w, REV_IN, 70); start(w, REV_LEVEL, 0); start(w, REV_FB, 0); start(w, REV_PRE, 0);
+    start(w, MODE, 0); start(w, SEQ_RUN, 0); start(w, SEQ_CLOCK, 3);
+    for (int i = 0; i < 8; i++) { start(w, SEQ_P1 + i, 0); start(w, SEQ_G1 + i, 1); }
 }
 
 /* ---- state as text: "key=value;" for every sound parameter. Used for the project chunk
@@ -274,6 +306,15 @@ static const struct { const char *name, *state; } FACTORY[] = {
     {"NOISE SNARE", "model=7;freq=12;spread=40;character=15;voice_vol=60;perc=45;perc_freq=30;perc_vol=80;f1_cutoff=85;f1_res=10;f1_mod=10;f2_cutoff=95;attack=0;decay=46;env_mode=1;volume=85;"},
     {"CHIP SWARM", "model=5;spread=10;character=80;voice_vol=65;f1_cutoff=75;f1_res=15;f1_mod=15;f2_cutoff=90;attack=5;decay=45;env_mode=0;volume=75;"},
     {"GRAIN CLOUD", "model=6;freq=12;spread=45;character=60;voice_vol=80;f1_cutoff=80;f1_res=20;f1_mod=0;f2_cutoff=70;f2_res=35;f2_mod=40;lfo_speed=30;lfo_shape=5;attack=60;decay=75;env_mode=0;volume=85;"},
+    /* phase 3 */
+    {"SPRING PERC", "voice_vol=0;perc=30;perc_freq=55;perc_vol=85;f1_cutoff=100;f1_res=0;f1_mod=0;f2_cutoff=100;attack=0;decay=45;env_mode=1;rev_in=80;rev_level=70;volume=85;"},
+    {"SPRING TOM", "voice_vol=0;perc=55;perc_freq=18;perc_vol=90;f1_cutoff=75;f1_res=10;f1_mod=15;f2_cutoff=90;attack=0;decay=56;env_mode=1;rev_in=75;rev_level=60;volume=90;"},
+    {"FEEDBACK DRONE", "model=2;freq=-12;spread=35;character=25;voice_vol=60;f1_cutoff=55;f1_res=45;f1_mod=10;f2_cutoff=60;f2_res=40;f2_mod=30;lfo_speed=20;lfo_shape=1;attack=70;decay=80;env_mode=0;rev_in=80;rev_level=55;rev_fb=35;volume=60;"},
+    {"POLY ORGAN", "model=0;mode=1;character=20;voice_vol=70;f1_cutoff=80;f1_res=10;f1_mod=10;f2_cutoff=90;attack=5;decay=45;env_mode=0;rev_in=60;rev_level=35;volume=80;"},
+    {"POLY STRINGS", "model=1;mode=1;voice_vol=65;f1_cutoff=62;f1_res=20;f1_mod=20;f2_cutoff=85;attack=45;decay=66;env_mode=0;rev_in=70;rev_level=50;volume=80;"},
+    {"SEQ METAL", "model=4;spread=40;character=40;voice_vol=70;f1_cutoff=50;f1_res=35;f1_mod=45;f2_cutoff=90;attack=0;decay=40;env_mode=1;seq_run=1;seq_clock=3;seq_p1=0;seq_p2=12;seq_p3=0;seq_p4=7;seq_p5=0;seq_p6=12;seq_p7=3;seq_p8=10;seq_g5=0;rev_in=60;rev_level=35;volume=85;"},
+    {"SEQ PERC", "voice_vol=0;perc=28;perc_freq=45;perc_vol=85;f1_cutoff=60;f1_res=30;f1_mod=0;f2_cutoff=55;f2_res=45;f2_mod=70;lfo_speed=78;lfo_shape=7;attack=0;decay=40;env_mode=1;seq_run=1;seq_clock=3;seq_p1=-12;seq_p2=7;seq_p3=0;seq_p4=19;seq_p5=-5;seq_p6=12;seq_p7=3;seq_p8=24;seq_g3=0;seq_g7=0;rev_in=70;rev_level=45;volume=85;"},
+    {"SEQ STRINGS", "model=1;spread=15;voice_vol=70;f1_cutoff=45;f1_res=40;f1_mod=50;f2_cutoff=85;attack=0;decay=44;env_mode=0;seq_run=1;seq_clock=3;seq_p1=0;seq_p2=0;seq_p3=12;seq_p4=0;seq_p5=7;seq_p6=0;seq_p7=10;seq_p8=12;rev_in=60;rev_level=30;volume=80;"},
     {"REED RANDOM", "model=3;freq=-12;spread=18;character=25;voice_vol=70;f1_cutoff=70;f1_res=25;f1_mod=10;f2_cutoff=50;f2_res=60;f2_mod=55;lfo_speed=62;lfo_shape=4;lfo_slew=20;attack=20;decay=60;env_mode=0;volume=80;"},
 };
 enum { NFACTORY = (int)(sizeof FACTORY / sizeof FACTORY[0]) };
@@ -367,24 +408,48 @@ static bool slot_save(Plugin *w) {
     return bank_write_locked();
 }
 
+/* ---- sequencer -----------------------------------------------------------------
+ * 8 steps, each a pitch (semitones relative to the key held) and a gate; a step with its gate
+ * on fires the envelope and the percussion and holds the gate for half a step. It runs while a
+ * key is held, in mono mode. With the host's transport running, step N simply IS position
+ * N * step length of the song (absolute index, as in mpc-vst-acid's clock): the pattern stays
+ * locked to the bar whatever the host does between callbacks, and step 1 falls on the start of
+ * the song. With the transport stopped it runs at the last tempo seen, from step 1 with the key.
+ * ---------------------------------------------------------------------------- */
+static double step_samples(Plugin *w) { return std::max(16.0, w->seq_beats * 60.0 / w->tempo * w->sr); }
+static void fire_step(Plugin *w, long long idx) {
+    if (!w->nheld) return;
+    const int st = (int)(((idx % 8) + 8) % 8);
+    if (!w->seq_gate[st]) return;
+    w->engine.note_on(clampi(w->held[w->nheld - 1] + w->seq_pitch[st], 0, 127), true);
+    w->gate_off = std::max(1, (int)(0.5 * step_samples(w)));
+}
+
 /* ---- MIDI ------------------------------------------------------------------ */
-static void all_off(Plugin *w) { w->nheld = 0; w->engine.note_off(); }
+static void all_off(Plugin *w) { w->nheld = 0; w->gate_off = 0; w->engine.all_off(); }
 static void midi(Plugin *w, const uint8_t *d) {
     const int st = d[0] & 0xf0, n = d[1] & 0x7f;
     if (st == 0x90 && d[2] > 0) {
+        if (w->poly) { w->engine.poly_on(n); return; }
         int k = 0;
         for (int i = 0; i < w->nheld; i++) if (w->held[i] != n) w->held[k++] = w->held[i];
         if (k == 32) { std::memmove(w->held, w->held + 1, 31); k = 31; }
+        const bool first = k == 0;
         w->held[k++] = (uint8_t)n;
         w->nheld = k;
-        w->engine.note_on(n, true);                     /* every key is a gate, as on the original */
+        if (!w->seq_on) w->engine.note_on(n, true);     /* every key is a gate, as on the original */
+        else if (first) {                               /* the step in progress sounds at once; later keys only transpose */
+            if (!w->was_playing) { w->seq_i = 0; w->to_next = step_samples(w); }
+            fire_step(w, w->was_playing ? w->seq_abs : 0);
+        }
     } else if (st == 0x80 || st == 0x90) {
+        if (w->poly) { w->engine.poly_off(n); return; }
         int k = 0;
         for (int i = 0; i < w->nheld; i++) if (w->held[i] != n) w->held[k++] = w->held[i];
         if (k == w->nheld) return;
         w->nheld = k;
-        if (!k) w->engine.note_off();
-        else w->engine.note_on(w->held[k - 1], false);  /* back to the key still held, no new attack */
+        if (!k) { w->gate_off = 0; w->engine.note_off(); }
+        else if (!w->seq_on) w->engine.note_on(w->held[k - 1], false);   /* back to the key still held, no new attack */
     } else if (st == 0xe0) {
         w->engine.set_bend(((((int)d[2] & 0x7f) << 7 | (d[1] & 0x7f)) - 8192) * (2.0f / 8192.0f));
     } else if (st == 0xb0 && n >= 1 && n <= 7) {
@@ -402,23 +467,56 @@ static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     float *L = out[0], *R = out[1];
     std::memset(L, 0, sizeof(float) * (size_t)n);
     std::memset(R, 0, sizeof(float) * (size_t)n);
-    int pos = 0;
-    for (int k = 0; k < w->nev; k++) {
-        const int f = clampi(w->ev[k].frame, pos, n);
-        if (f > pos) { w->engine.render(L + pos, R + pos, f - pos); pos = f; }
-        midi(w, w->ev[k].d);
+
+    /* the host's clock */
+    const VstTimeInfo *ti = (const VstTimeInfo *)w->master(&w->fx, audioMasterGetTime, 0, kVstTempoValid | kVstPpqPosValid, 0, 0.0f);
+    if (ti && (ti->flags & kVstTempoValid) && ti->tempo > 20 && ti->tempo < 1000) w->tempo = ti->tempo;
+    const bool playing = ti && (ti->flags & kVstTransportPlaying) && (ti->flags & kVstPpqPosValid);
+    const double sps = step_samples(w);
+    const double step_pos = playing ? ti->ppqPos / w->seq_beats : 0;
+    if (playing != w->was_playing) { w->was_playing = playing; w->seq_abs = -1000000; w->to_next = sps; w->seq_i = 0; }
+    /* frame of the next step boundary at or after pos, n if none in this block */
+    auto next_step = [&](int pos) -> int {
+        if (!w->seq_on) return n;
+        double f;
+        if (playing) f = std::ceil(((double)(w->seq_abs + 1) - step_pos) * sps - 1e-6);
+        else if (w->nheld) f = pos + std::ceil(w->to_next);
+        else return n;
+        return f >= n ? n : f < pos ? pos : (int)f;
+    };
+    if (w->seq_on && playing) {   /* the step this block starts in (transport start, a jump, or a boundary at frame 0) */
+        const long long cur = (long long)std::floor(step_pos + 1e-6);
+        if (cur != w->seq_abs) { w->seq_abs = cur; fire_step(w, cur); }
     }
+
+    int pos = 0, k = 0;
+    for (;;) {
+        /* at pos: gate off, then step boundaries, then MIDI (a key played exactly on the grid meets the new step) */
+        if (w->seq_on && next_step(pos) == pos && pos < n) {
+            if (playing) { w->seq_abs++; fire_step(w, w->seq_abs); }
+            else { w->seq_i++; w->to_next += sps; fire_step(w, w->seq_i); }
+        }
+        while (k < w->nev && w->ev[k].frame <= pos) midi(w, w->ev[k++].d);
+        if (pos >= n) break;
+        int f = n;
+        if (k < w->nev) f = std::min(f, clampi(w->ev[k].frame, pos + 1, n));
+        f = std::min(f, std::max(pos + 1, next_step(pos + 1)));
+        if (w->gate_off > 0) f = std::min(f, pos + w->gate_off);
+        w->engine.render(L + pos, R + pos, f - pos);
+        if (w->gate_off > 0) { w->gate_off -= f - pos; if (w->gate_off <= 0) { w->gate_off = 0; w->engine.note_off(); } }
+        if (!playing && w->seq_on && w->nheld) w->to_next -= f - pos;
+        pos = f;
+    }
+    while (k < w->nev) midi(w, w->ev[k++].d);
     w->nev = 0;
-    if (n > pos) w->engine.render(L + pos, R + pos, n - pos);
-    if (!w->engine.idle() || pos > 0) {
-        for (int c = 0; c < 2; c++) {
-            float *y = out[c];
-            for (int i = 0; i < n; i++) {
-                const float a = std::fabs(y[i]);              /* output safety above -3 dBFS, ceiling 0.98 */
-                if (a > 0.7f) {
-                    float t = std::min((a - 0.7f) / 0.3f, 3.0f), t2 = t * t;
-                    y[i] = std::copysign(0.7f + 0.28f * t * (27 + t2) / (27 + 9 * t2), y[i]);
-                }
+
+    for (int c = 0; c < 2; c++) {
+        float *y = out[c];
+        for (int i = 0; i < n; i++) {
+            const float a = std::fabs(y[i]);              /* output safety above -3 dBFS, ceiling 0.98 */
+            if (a > 0.7f) {
+                float t = std::min((a - 0.7f) / 0.3f, 3.0f), t2 = t * t;
+                y[i] = std::copysign(0.7f + 0.28f * t * (27 + t2) / (27 + 9 * t2), y[i]);
             }
         }
     }
@@ -534,6 +632,7 @@ static void display(Plugin *w, int idx, char *buf, size_t n) {
     const float x = (val_at(w, idx) - pp->min) / (pp->max > pp->min ? pp->max - pp->min : 1);
     switch (key) {
     case FREQ: std::snprintf(buf, n, "%+d st", u); break;
+    case SEQ_P1: case SEQ_P2: case SEQ_P3: case SEQ_P4: case SEQ_P5: case SEQ_P6: case SEQ_P7: case SEQ_P8: std::snprintf(buf, n, "%+d st", u); break;
     case F1_CUTOFF: case F2_CUTOFF: fmt_hz(buf, n, 20 * std::pow(2.0f, law_cutoff_oct(x))); break;
     case ATTACK: fmt_time(buf, n, law_time(x, 0.001f, 5000)); break;
     case DECAY: fmt_time(buf, n, law_time(x, 0.005f, 2000)); break;
@@ -596,7 +695,7 @@ static intptr_t dispatcher(AEffect *e, int32_t op, int32_t idx, intptr_t v, void
     case effMainsChanged: if (!v) all_off(w); return 1;
     case effProcessEvents: return process_events(w, (const VstEvents *)p);
     case effCanDo:
-        if (p && (!std::strcmp((const char *)p, "receiveVstEvents") || !std::strcmp((const char *)p, "receiveVstMidiEvent"))) return 1;
+        if (p && (!std::strcmp((const char *)p, "receiveVstEvents") || !std::strcmp((const char *)p, "receiveVstMidiEvent") || !std::strcmp((const char *)p, "receiveVstTimeInfo"))) return 1;
         return -1;
     case effGetChunk: return get_chunk(w, (void **)p);
     case effSetChunk: return set_chunk(w, p, v);

@@ -2,7 +2,7 @@
 
 **Rattler** (Arbeitstitel) – paraphoner Schwarm-Synthesizer als VST2-Plugin für die Akai Force, nachempfunden nach dem Eowave Quadrantid Swarm.
 
-**Status:** Phase 1 (Grundstimme) läuft auf der Force. Phase 2 (Charakter) umgesetzt, Test auf der Force steht aus. Phase 3 offen. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
+**Status:** Phase 1 (Grundstimme) und Phase 2 (Charakter) laufen auf der Force. Phase 3 (Ausbau) umgesetzt, Test auf der Force steht aus. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
 
 ## Ziel
 
@@ -76,7 +76,7 @@ Die Klangerzeugung im Original ist nicht dokumentiert, das Modell ist eine Annah
 - **Mono:** Eine Note setzt die Grundtonhöhe aller 8 VCOs, Spread fächert sie auf.
 - **Poly:** Jeder der 8 VCOs hat eine eigene Tonhöhe und einen eigenen VCA, Spread ist ohne Funktion. Filter und Hüllkurve bleiben gemeinsam.
   *Abweichung vom Original:* Statt 8 Touch-Keys mit je einem Tonhöhen-Poti werden eingehende MIDI-Noten frei auf die 8 VCOs verteilt (bis 8 Noten gleichzeitig).
-- **Sequencer:** 8 Steps mit Tonhöhe und Gate pro Step, Start/Stop, Reset auf Step 1.
+- **Sequencer:** 8 Steps mit Tonhöhe und Gate pro Step, Start/Stop. Umsetzung siehe „Festlegungen in Phase 3".
 
 ## Parameter
 
@@ -150,9 +150,9 @@ Die Preset-Verwaltung kommt von Anfang an nach Acid-Muster hinein.
 
 **Fertig, wenn:** Sequencer läuft stabil zur Clock, Poly mit 8 Noten ohne Aussetzer, Feedback lässt sich ohne Pegelexplosion aufdrehen (Limiter im Feedback-Weg).
 
-## Stand Phase 1 und 2
+## Stand Phase 1 bis 3
 
-Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hülle, MIDI, Speicherplätze). Handgeschriebene VST2-Hülle ohne Wrapper wie beim carp 2000, Build über den gemeinsamen Workflow von `sd88me/mpc-vst-plugins`.
+Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hülle, MIDI, Sequencer, Speicherplätze). Handgeschriebene VST2-Hülle ohne Wrapper wie beim carp 2000, Build über den gemeinsamen Workflow von `sd88me/mpc-vst-plugins`.
 
 ### Bedienseiten
 
@@ -162,6 +162,9 @@ Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hül
 | PERC | Perc (Decay-Länge), Perc Freq, Perc Vol, Voice Vol | Attack, Decay/Release, Envelope (AR/AD), Volume |
 | FILTER | VCF 1 Cutoff, VCF 1 Res, VCF 1 Env Mod, VCF 1 Type (LP/HP) | VCF 2 Cutoff, VCF 2 Res, VCF 2 LFO Mod, LFO Speed |
 | LFO | Speed, Shape, Slew, VCF 2 LFO Mod | Freq Mod, Freq Mod Source |
+| REVERB | Rev Input, Rev Level, In (Feedback), Rev Pre VCA | Mode (Mono/Poly), Seq Start, Seq Clock, Volume |
+| STEPS | Step 1–4 (Tonhöhe, ± 24 Halbtöne) | Step 5–8 |
+| GATES | Gate 1–4 (an/aus) | Gate 5–8 |
 | PRESET | Preset (1–32), LOAD, SAVE | |
 
 Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve auf einer Seite spielbar ist.
@@ -189,6 +192,17 @@ Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve 
 - **MIDI-CC 1–7:** wie im Original zum Reglerwert addiert, nicht gespeichert. Sendet die Force auf der Spur CC7 (Lautstärke), hebt das den Volume-Regler an.
 - Die Konstanten zu Reed, Metal, Grains, Noise und Delay stehen oben in `rattler_core.h`.
 - Plätze 9–16 haben Werksklänge zu Phase 2 (drei reine Percussion-Klänge, die neuen Modelle), solange dort nichts gespeichert ist.
+
+### Festlegungen in Phase 3
+
+- **Federhall:** der Hall des carp 2000 (zwei Federn), feste Länge 2,5 s (`REV_SECONDS` in `rattler_core.h`). `Rev Input` regelt den Pegel in die Feder, `Rev Level` den Hallanteil am Ausgang, `In` die Rückführung in den Mixer. Im Feedback-Weg sitzt ein Limiter. Mit `Rev Pre VCA` liegt der Hall vor dem VCA, die Hüllkurve schneidet dann die Fahne ab. Stehen `Rev Level` und `In` auf 0, rechnet der Hall nicht mit.
+- **Poly:** bis zu 8 Tasten, jede bekommt einen VCO. Bei der 9. Taste weicht die älteste. Eine losgelassene Taste klingt mit der Decay-Zeit aus, solange andere noch gehalten werden. Nach der letzten Taste klingt der Rest über die gemeinsame Hüllkurve aus. Ein neuer Akkord blendet den alten in etwa 16 ms aus. Spread ist ohne Funktion, Pegel je VCO über `POLY_NORM`.
+- **Sequencer:** läuft nur im Mono-Modus und nur, solange eine Taste gehalten wird. Die Taste gibt den Grundton vor, die Steps transponieren ihn um ± 24 Halbtöne. Ein Step mit Gate löst Hüllkurve und Percussion aus und hält das Gate einen halben Step lang. *Abweichung vom Original:* Dort läuft der Sequencer ohne Taste auf der Freq-Einstellung.
+- **Clock:** Läuft der Transport der Force, hängen die Steps fest an der Songposition (Step 1 liegt auf dem Songanfang, Prinzip der Acid-Clock nach den Fixes). Eine Taste mitten im Step spielt den laufenden Step sofort, der nächste kommt auf dem Raster. Steht der Transport, läuft der Sequencer im zuletzt gesehenen Tempo und beginnt mit der Taste bei Step 1. Teiler: 1/4, 1/8, 1/8T, 1/16, 1/16T, 1/32. Ein eigener Reset-Knopf entfällt dadurch.
+- **LFO-Shape „Seq":** gibt die 8 Step-Tonhöhen als Werte im LFO-Tempo aus, unabhängig von der Sequencer-Clock.
+- **Spread ganz unten:** Die acht Oszillatoren behalten dort eine unregelmäßige Verstimmung von wenigen Cent. Die gleichmäßige Mini-Verstimmung aus Phase 1 ließ den Klang am Anschlag nur alle paar Sekunden kurz anschwellen. Oberhalb der untersten Reglerprozente ist der Klang unverändert.
+- **Skin:** drei neue Seiten im bisherigen Raster, sonst unverändert.
+- Plätze 17–24 haben Werksklänge zu Phase 3 (Federhall, Poly, Sequencer), solange dort nichts gespeichert ist.
 
 ### Bauen und testen
 
