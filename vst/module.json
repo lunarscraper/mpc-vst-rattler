@@ -50,6 +50,17 @@
     {"key": "seq_g5", "name": "Gate 5", "options": ["OFF", "ON"]},
     {"key": "seq_g6", "name": "Gate 6", "options": ["OFF", "ON"]},
     {"key": "seq_g7", "name": "Gate 7", "options": ["OFF", "ON"]},
-    {"key": "seq_g8", "name": "Gate 8", "options": ["OFF", "ON"]}
+    {"key": "seq_g8", "name": "Gate 8", "options": ["OFF", "ON"]},
+    {"key": "dice", "name": "Random", "access": "write"},
+    {"key": "mutate", "name": "Mutate", "access": "write"},
+    {"key": "undo", "name": "Undo", "access": "write"},
+    {"key": "dice_seq", "name": "Dice Seq", "access": "write"},
+    {"key": "dice_style", "name": "Dice Style", "options": ["INDUSTRIAL", "METAL", "NOISE", "PERC", "DRONE", "ANY"]},
+    {"key": "dice_amount", "name": "Mutate Amount", "min": 0, "max": 100},
+    {"key": "lock_filter", "name": "Lock Filter", "options": ["OFF", "ON"]},
+    {"key": "lock_env", "name": "Lock Env", "options": ["OFF", "ON"]},
+    {"key": "lock_seq", "name": "Lock Seq", "options": ["OFF", "ON"]},
+    {"key": "seq_chance", "name": "Seq Chance", "min": 0, "max": 100},
+    {"key": "seq_density", "name": "Seq Density", "min": 0, "max": 100}
   ]
 }

@@ -2,7 +2,7 @@
 
 **Rattler** (Arbeitstitel) – paraphoner Schwarm-Synthesizer als VST2-Plugin für die Akai Force, nachempfunden nach dem Eowave Quadrantid Swarm.
 
-**Status:** Phase 1 (Grundstimme) und Phase 2 (Charakter) laufen auf der Force. Phase 3 (Ausbau) umgesetzt, Test auf der Force steht aus. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
+**Status:** Phase 1 (Grundstimme) und Phase 2 (Charakter) laufen auf der Force. Phase 3 (Ausbau) umgesetzt. Dice-Update (Zufall, Mutation, Undo, neue Startseite, Step-Chance, Industrial-Werksklänge) umgesetzt, Test auf der Force steht aus. Grundlage: Handbuch `swarm_manual_online_v2.pdf`.
 
 ## Ziel
 
@@ -158,16 +158,18 @@ Umgesetzt in `vst/rattler_core.h` (Klang) und `vst/rattler_vst.cpp` (Plugin-Hül
 
 | Seite | Regler 1–4 | Regler 5–8 |
 |---|---|---|
+| SWARM | Model, Spread, Character, Decay/Release | VCF 1 Cutoff, VCF 1 Res, VCF 2 Cutoff, VCF 2 Res |
+| DICE | RANDOM, MUTATE, UNDO (Tasten), Style | Mutate Amount, Lock Filter, Lock Env, Lock Seq |
 | VOICE | Model, Freq (± 24 Halbtöne), Spread, Character | Voice Vol, Freq Mod, Freq Mod Source, Volume |
 | PERC | Perc (Decay-Länge), Perc Freq, Perc Vol, Voice Vol | Attack, Decay/Release, Envelope (AR/AD), Volume |
 | FILTER | VCF 1 Cutoff, VCF 1 Res, VCF 1 Env Mod, VCF 1 Type (LP/HP) | VCF 2 Cutoff, VCF 2 Res, VCF 2 LFO Mod, LFO Speed |
 | LFO | Speed, Shape, Slew, VCF 2 LFO Mod | Freq Mod, Freq Mod Source |
-| REVERB | Rev Input, Rev Level, In (Feedback), Rev Pre VCA | Mode (Mono/Poly), Seq Start, Seq Clock, Volume |
-| STEPS | Step 1–4 (Tonhöhe, ± 24 Halbtöne) | Step 5–8 |
-| GATES | Gate 1–4 (an/aus) | Gate 5–8 |
+| REVERB | Rev Input, Rev Level, In (Feedback), Rev Pre VCA | Mode (Mono/Poly), Volume |
+| SEQ | Seq Start, Seq Clock, Chance, Density | DICE SEQ, UNDO (Tasten), Style, Volume |
+| STEPS | Step 1–8 (Tonhöhe, ± 24 Halbtöne) | darunter Gate 1–8 (an/aus) |
 | PRESET | Preset (1–32), LOAD, SAVE | |
 
-Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve auf einer Seite spielbar ist.
+Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve auf einer Seite spielbar ist. Tasten und Schalter liegen nicht auf den Q-Links (nur Regler und Auswahllisten), dafür gibt es CC 20–23.
 
 ### Festlegungen in Phase 1
 
@@ -203,6 +205,30 @@ Einige Regler liegen auf zwei Seiten, damit die Percussion mit ihrer Hüllkurve 
 - **Spread ganz unten:** Die acht Oszillatoren behalten dort eine unregelmäßige Verstimmung von wenigen Cent. Die gleichmäßige Mini-Verstimmung aus Phase 1 ließ den Klang am Anschlag nur alle paar Sekunden kurz anschwellen. Oberhalb der untersten Reglerprozente ist der Klang unverändert.
 - **Skin:** drei neue Seiten im bisherigen Raster, sonst unverändert.
 - Plätze 17–24 haben Werksklänge zu Phase 3 (Federhall, Poly, Sequencer), solange dort nichts gespeichert ist.
+
+### Dice-Update: schnell zum Sound wie am Original
+
+Am Swarm kommt man mit Modell, Spread, Character und den beiden Filtern schnell zu etwas Brauchbarem. Das Update baut genau diesen Weg nach und ergänzt Zufall als Startpunkt – gedacht für gezielt gestreute, gesequencete Industrial-Klänge.
+
+- **SWARM** ist jetzt die erste Seite: Modell, die zwei Regler, die den Schwarm ausmachen, die Decay-Zeit und beide Filter mit Resonanz auf den 8 Q-Links.
+- **RANDOM** (Seite DICE, CC 20) würfelt einen neuen Klang im gewählten **Style**:
+  - `INDUSTRIAL` – Metal/Noise/Grains/Chiptune/Reed, viel Character, Resonanz, oft AD und Percussion, Zufalls-LFOs, gelegentlich Feder-Feedback
+  - `METAL` – glockige, weit gespreizte Teiltöne, meist mit Hall
+  - `NOISE` – Noise/Grains/Chiptune, hohe Resonanz, schnelle Zufalls-LFOs auf VCF 2
+  - `PERC` – Percussion-Stimme im Vordergrund, kurze AD-Hüllkurven
+  - `DRONE` – lange AR-Hüllkurven, langsamer LFO, viel Hall
+  - `ANY` – alles, in hörbaren Grenzen
+- **MUTATE** (CC 21) verändert den aktuellen Klang nur ein Stück. `Mutate Amount` sagt, wie weit: Regler wandern um bis zu ± 40 % ihres Bereichs mal Amount, ausgeschaltete Sends und Modulationen bleiben meist aus, Schalter kippen gelegentlich, das Modell wechselt selten.
+- **UNDO** (CC 22) nimmt RANDOM, MUTATE und DICE SEQ zurück, bis zu 16 Schritte.
+- **DICE SEQ** (Seite SEQ, CC 23) würfelt nur die 8 Steps: Tonhöhen aus den Intervallen des Styles (Industrial: viel Grundton, Oktaven, Tritonus, kleine None), Gates nach **Density**. Es bleibt immer mindestens ein Gate an.
+- **Lock Filter / Lock Env / Lock Seq** schützen diese Gruppen vor RANDOM und MUTATE (Lock Seq auch vor DICE SEQ).
+- **Nie gewürfelt:** Freq, Volume, Mode, Seq Start, Seq Clock, Chance – Stimmung, Pegel und die laufende Sequenz bleiben, wie sie sind.
+- Nach jedem Wurf sorgt eine Sicherheitsprüfung dafür, dass etwas zu hören ist (eine Quelle im Mixer, VCF 1 nicht zu, VCF 2 über einem Hochpass, Hochpass unterhalb dessen, was er sonst wegnähme).
+- **Chance** (Seite SEQ): Wahrscheinlichkeit, mit der ein Step mit Gate tatsächlich spielt. 100 % = wie bisher (Original). Der Step, den ein Tastendruck startet, spielt immer. *Erweiterung, am Original nicht vorhanden.*
+- **Speichern:** Gefällt ein Wurf, auf der Seite PRESET mit SAVE auf einen Platz legen. Style, Amount, Locks und Density sind Arbeitsweise, kein Klang: Sie stehen im Projekt, aber nicht im Preset – ein LOAD lässt sie, wie sie sind.
+- **MIDI-CC 20–23** lösen aus, wenn der Wert die Mitte nach oben überschreitet (Taster mit 127/0 oder ein Fader über die Mitte). Ideal für OXI E16, Launch Control oder das iPad.
+- Plätze 25–32 haben Industrial-Werksklänge (RUST HIT, SHEET METAL, SERVO, STATIC BURST, PIPE KNOCK, GEAR GRIND, FACTORY HALL, SCRAP SEQ mit Chance 60 %), solange dort nichts gespeichert ist. Damit sind alle 32 Plätze vorbelegt; SAVE überschreibt wie gewohnt.
+- Die Würfel laufen auf dem Audio-Thread am Blockanfang, ohne Speicheranforderung. Jede Instanz würfelt anders (Startwert aus Uhrzeit und Adresse); `RATTLER_SEED` setzt ihn fest (Offline-Test).
 
 ### Bauen und testen
 

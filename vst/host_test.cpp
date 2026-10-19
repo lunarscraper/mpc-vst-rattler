@@ -6,7 +6,8 @@
  * both filters (LP darkens, HP removes the fundamental), the envelope (AR holds
  * and releases, AD decays under a held key), mono key handling, the 32 preset slots (program
  * list, factory sounds, SAVE/LOAD, shared bank file), output ceiling, chunk restore, a random
- * parameter/MIDI stress run, NaN/denormal-free output.
+ * parameter/MIDI stress run, NaN/denormal-free output; the dice (RANDOM per style, locks, UNDO,
+ * MUTATE, DICE SEQ, CC 20-23, SEQ CHANCE, dice settings in the chunk only).
  * With "bench" as the second argument it only measures CPU load. Prints PASSED/FAILED. */
 #include <chrono>
 #include <cmath>
@@ -79,6 +80,8 @@ static void set(AEffect *e, const char *name, double v) {
     else if (!s.compare(0, 5, "Step ")) { lo = -24; hi = 24; }
     else if (s == "Freq Mod Source") { hi = 2; }
     else if (s == "VCF1 Type" || s == "Env Mode" || s == "Load" || s == "Save") { hi = 1; }
+    else if (s == "Random" || s == "Mutate" || s == "Undo" || s == "Dice Seq" || !s.compare(0, 5, "Lock ")) { hi = 1; }
+    else if (s == "Dice Style") { hi = 5; }
     else if (s == "Preset") { lo = 1; hi = 32; }
     e->setParameter(e, param(e, name), (float)((v - lo) / (hi - lo)));
 }
@@ -153,6 +156,7 @@ int main(int argc, char **argv) {
     const char *bank = "/tmp/rattler_test_presets.txt";
     std::remove(bank);
     setenv("RATTLER_PRESETS", bank, 1);
+    setenv("RATTLER_SEED", "1", 0);   /* the dice roll the same in every run (override from outside) */
     void *h = dlopen(argv[1], RTLD_NOW);
     if (!h) { std::printf("FAIL: %s\n", dlerror()); return 1; }
     typedef AEffect *(*MainF)(audioMasterCallback);
@@ -423,8 +427,8 @@ int main(int argc, char **argv) {
     /* 7. the 32 slots: program list, factory sounds, SAVE/LOAD, bank file shared by instances */
     {
         CHECK(e->numPrograms == 32, "numPrograms %d", e->numPrograms);
-        CHECK(progname(e, 0) == "STRING SWARM" && progname(e, 31) == "32 (empty)", "program names: %s / %s", progname(e, 0).c_str(), progname(e, 31).c_str());
-        for (int i = 0; i < 24; i++) {
+        CHECK(progname(e, 0) == "STRING SWARM" && progname(e, 31) == "SCRAP SEQ", "program names: %s / %s", progname(e, 0).c_str(), progname(e, 31).c_str());
+        for (int i = 0; i < 32; i++) {
             e->dispatcher(e, 2, 0, i, nullptr, 0);
             on(e, 48); Buf a = run(e, 2.0); off(e, 48); Buf tl = run(e, 12.0);
             std::printf("  preset %-15s 2 s %6.1f dBFS, peak %.3f\n", progname(e, i).c_str(), db(rms(a, 0)), peak(a));
@@ -435,7 +439,7 @@ int main(int argc, char **argv) {
         e->dispatcher(e, 2, 0, 1, nullptr, 0);
         std::string model = display(e, "Model");
         set(e, "Preset", 28);
-        CHECK(display(e, "Preset") == "28 (empty)" && display(e, "Model") == model, "browsing changed the sound");
+        CHECK(display(e, "Preset") == "STATIC BURST" && display(e, "Model") == model, "browsing changed the sound");
         /* SAVE to 28, change, LOAD */
         set(e, "Spread", 37.5); set(e, "Model", 2); set(e, "VCF1 Type", 1);
         press(e, "Save");
@@ -444,9 +448,9 @@ int main(int argc, char **argv) {
         press(e, "Load");
         CHECK(display(e, "Model") == "DRONE" && display(e, "VCF1 Type") == "HP" && std::fabs(e->getParameter(e, param(e, "Spread")) - 0.375f) < 1e-4, "LOAD does not restore the saved sound");
         CHECK(e->getParameter(e, param(e, "Load")) == 0 && e->getParameter(e, param(e, "Save")) == 0, "buttons do not read released");
-        /* LOAD on an empty slot leaves the sound alone */
+        /* all 32 slots carry a factory sound now: LOAD on slot 30 loads GEAR GRIND */
         set(e, "Preset", 30); press(e, "Load");
-        CHECK(display(e, "Model") == "DRONE", "empty slot wiped the sound");
+        CHECK(display(e, "Model") == "REED", "slot 30 does not load GEAR GRIND");
         /* a factory slot can be overwritten, a second instance sees the bank, the file has both */
         set(e, "Preset", 1); press(e, "Save");
         e->dispatcher(e, 4, 0, 0, (void *)"MY SWARM", 0);
@@ -458,6 +462,152 @@ int main(int argc, char **argv) {
         int lines = 0; char line[4096];
         if (FILE *f = std::fopen(bank, "r")) { while (std::fgets(line, sizeof line, f)) lines++; std::fclose(f); }
         CHECK(lines == 2, "bank file has %d lines", lines);
+    }
+
+    /* 7b. dice: RANDOM per style (audible, below 0 dBFS, never touches FREQ/VOLUME/MODE/SEQ START/
+     * SEQ CLOCK/CHANCE), the locks, UNDO 16 deep, MUTATE, DICE SEQ and DENSITY, CC 20-23 with edge
+     * detection, SEQ CHANCE, dice settings in the chunk but not in a preset slot */
+    {
+        auto snap = [&](AEffect *x) { std::vector<float> v(x->numParams); for (int i = 0; i < x->numParams; i++) v[i] = x->getParameter(x, i); return v; };
+        auto tick = [&] { run(e, 0.01); };   /* one block: the request runs at its start */
+        auto same = [&](const std::vector<float> &a, const std::vector<float> &b, const char *n) { return std::fabs(a[param(e, n)] - b[param(e, n)]) < 1e-6f; };
+        const char *KEEP[] = {"Freq", "Volume", "Mode", "Seq Start", "Seq Clock", "Seq Chance"};
+        const char *FILT[] = {"VCF1 Cutoff", "VCF1 Res", "VCF1 Mod", "VCF1 Type", "VCF2 Cutoff", "VCF2 Res", "VCF2 Mod"};
+        const char *ENVK[] = {"Attack", "Decay", "Env Mode"};
+        plain(e, 0); set(e, "Freq", 5); set(e, "Volume", 77); set(e, "Seq Chance", 63);
+        for (const char *k : {"Lock Filter", "Lock Env", "Lock Seq"}) set(e, k, 0);
+        set(e, "Mutate Amount", 30); set(e, "Seq Density", 40);
+        CHECK(display(e, "Dice Style") == "INDUSTRIAL", "default style %s", display(e, "Dice Style").c_str());
+        int quiet = 0, rolls = 0, models[8] = {0};
+        double hot = 0;
+        for (int st = 0; st < 6; st++) {
+            set(e, "Dice Style", st);
+            for (int r = 0; r < 25; r++) {
+                std::vector<float> b = snap(e);
+                press(e, "Random"); tick();
+                std::vector<float> a = snap(e);
+                for (const char *k : KEEP) CHECK(same(a, b, k), "RANDOM changed %s", k);
+                CHECK(a != b, "RANDOM changed nothing");
+                models[(int)std::lround(a[param(e, "Model")] * 7)]++;
+                on(e, 48); Buf s = run(e, 0.6); off(e, 48); run(e, 1.5);
+                if (rms(s, 0) < 1e-3 && peak(s) < 0.05) {   /* a short hit has little rms over 0.6 s, but a clear peak */
+                    quiet++;
+                    std::printf("  quiet roll (style %d, %.1f dBFS):", st, db(rms(s, 0)));
+                    for (const char *k : {"Model", "Spread", "Character", "Voice Vol", "Perc Vol", "VCF1 Type", "VCF1 Cutoff", "VCF1 Res", "VCF1 Mod", "VCF2 Cutoff", "VCF2 Res", "VCF2 Mod", "Attack", "Decay", "Env Mode", "Rev Pre VCA", "Freq Mod", "Freq Mod Source"}) std::printf(" %s=%s", k, display(e, k).c_str());
+                    std::printf("\n");
+                }
+                hot = std::max(hot, peak(s)); rolls++;
+            }
+        }
+        int nm = 0; for (int m : models) nm += m > 0;
+        std::printf("  dice: %d rolls, %d quiet, %d models, peak %.3f\n", rolls, quiet, nm, hot);
+        CHECK(quiet <= 2, "%d of %d rolls nearly silent", quiet, rolls);
+        CHECK(hot < 1.0, "a roll above 0 dBFS");
+        CHECK(nm == 8, "RANDOM reaches only %d models", nm);
+        CHECK(e->getParameter(e, param(e, "Random")) == 0, "RANDOM does not read released");
+        /* locks */
+        set(e, "Dice Style", 0);
+        set(e, "Lock Filter", 1); set(e, "Lock Env", 1); set(e, "Lock Seq", 1);
+        {
+            std::vector<float> b = snap(e);
+            for (int r = 0; r < 10; r++) { press(e, "Random"); tick(); press(e, "Mutate"); tick(); press(e, "Dice Seq"); tick(); }
+            std::vector<float> a = snap(e);
+            for (const char *k : FILT) CHECK(same(a, b, k), "LOCK FILTER: %s moved", k);
+            for (const char *k : ENVK) CHECK(same(a, b, k), "LOCK ENV: %s moved", k);
+            for (int i = 1; i <= 8; i++) { CHECK(same(a, b, ("Step " + std::to_string(i)).c_str()) && same(a, b, ("Gate " + std::to_string(i)).c_str()), "LOCK SEQ: step %d moved", i); }
+        }
+        set(e, "Lock Filter", 0); set(e, "Lock Env", 0); set(e, "Lock Seq", 0);
+        /* UNDO: 3 back to the start; 16 deep at most; UNDO with nothing left changes nothing */
+        {
+            std::vector<float> s0 = snap(e);
+            press(e, "Random"); tick(); press(e, "Mutate"); tick(); press(e, "Dice Seq"); tick();
+            for (int u = 0; u < 3; u++) { press(e, "Undo"); tick(); }
+            std::vector<float> a = snap(e);
+            bool eq = true; for (int i = 0; i < e->numParams; i++) if (std::fabs(a[i] - s0[i]) > 1e-6f) { char nm2[64] = {0}; e->dispatcher(e, 8, i, 0, nm2, 0); if (!std::strstr(nm2, " List")) eq = false; }
+            CHECK(eq, "3 x UNDO does not restore the sound");
+            std::vector<std::vector<float>> st;
+            for (int r = 0; r < 20; r++) { st.push_back(snap(e)); press(e, "Random"); tick(); }
+            for (int u = 0; u < 16; u++) { press(e, "Undo"); tick(); }
+            CHECK(same(snap(e), st[4], "Spread") && same(snap(e), st[4], "VCF1 Cutoff"), "UNDO is not 16 deep");
+            std::vector<float> b = snap(e);
+            press(e, "Undo"); tick();
+            CHECK(snap(e) == b, "UNDO with an empty history changed the sound");
+        }
+        /* MUTATE: amount 0 does nothing, 30 changes a little */
+        {
+            set(e, "Mutate Amount", 0);
+            std::vector<float> b = snap(e);
+            press(e, "Mutate"); tick();
+            CHECK(snap(e) == b, "MUTATE at amount 0 changed the sound");
+            set(e, "Mutate Amount", 30);
+            double dmax = 0; int changed = 0;
+            for (int r = 0; r < 20; r++) {
+                b = snap(e); press(e, "Mutate"); tick(); std::vector<float> a = snap(e);
+                if (a != b) changed++;
+                for (const char *k : {"Spread", "Character", "Decay"}) dmax = std::max(dmax, (double)std::fabs(a[param(e, k)] - b[param(e, k)]));
+                for (const char *k : KEEP) CHECK(same(a, b, k), "MUTATE changed %s", k);
+            }
+            CHECK(changed >= 18 && dmax <= 0.121, "MUTATE: %d changed, largest step %.3f", changed, dmax);
+        }
+        /* DICE SEQ: only the steps; DENSITY 0 leaves exactly one gate, 100 all eight */
+        {
+            for (double dens : {0.0, 100.0}) {
+                set(e, "Seq Density", dens);
+                std::vector<float> b = snap(e);
+                press(e, "Dice Seq"); tick();
+                std::vector<float> a = snap(e);
+                int gates = 0;
+                for (int i = 1; i <= 8; i++) gates += a[param(e, ("Gate " + std::to_string(i)).c_str())] > 0.5f;
+                CHECK(gates == (dens > 50 ? 8 : 1), "DENSITY %.0f: %d gates", dens, gates);
+                for (const char *k : {"Model", "Spread", "VCF1 Cutoff", "Decay", "Freq"}) CHECK(same(a, b, k), "DICE SEQ changed %s", k);
+            }
+            set(e, "Seq Density", 40);
+        }
+        /* CC 20: fires once per crossing of the middle */
+        {
+            std::vector<float> b = snap(e);
+            send(e, 0xb0, 20, 127); tick();
+            std::vector<float> a = snap(e);
+            CHECK(a != b, "CC 20 does not roll");
+            send(e, 0xb0, 20, 127); tick();
+            CHECK(snap(e) == a, "CC 20 held high rolls again");
+            send(e, 0xb0, 22, 127); tick(); send(e, 0xb0, 22, 0); tick();
+            CHECK(snap(e) == b, "CC 22 does not undo");
+            send(e, 0xb0, 20, 0); tick();
+        }
+        /* SEQ CHANCE: 0 % plays only the step the key starts, 100 % every gate */
+        {
+            plain(e, 0); set(e, "Env Mode", 1); set(e, "Decay", 20); set(e, "Seq Start", 1); set(e, "Seq Clock", 3);
+            double r100 = 0, r0 = 0;
+            for (double c : {100.0, 0.0}) {
+                set(e, "Seq Chance", c);
+                on(e, 60); Buf s = run(e, 2.0); off(e, 60); run(e, 1.0);
+                (c > 50 ? r100 : r0) = rms(s, 1.0, 2.0);
+                CHECK(rms(s, 0, 0.1) > 1e-3, "CHANCE %.0f: the key itself is silent", c);
+            }
+            std::printf("  chance: 100 %% %.4f, 0 %% %.6f rms after 1 s\n", r100, r0);
+            CHECK(r100 > 3e-3 && r0 < r100 * 0.01, "SEQ CHANCE does not thin the steps");
+            set(e, "Seq Chance", 100); set(e, "Seq Start", 0);
+        }
+        /* dice settings: in the chunk, not in a preset slot */
+        {
+            set(e, "Dice Style", 2); set(e, "Mutate Amount", 70); set(e, "Lock Env", 1);
+            set(e, "Preset", 26); press(e, "Save");
+            set(e, "Dice Style", 0); set(e, "Lock Env", 0);
+            press(e, "Load");
+            CHECK(display(e, "Dice Style") == "INDUSTRIAL" && display(e, "Lock Env") == "OFF", "a preset changed the dice settings");
+            set(e, "Dice Style", 2); set(e, "Lock Env", 1);
+            void *chunk = nullptr;
+            intptr_t len = e->dispatcher(e, 23, 0, 0, &chunk, 0);
+            std::vector<uint8_t> copy((uint8_t *)chunk, (uint8_t *)chunk + len);
+            AEffect *e2 = mainf(master);
+            e2->dispatcher(e2, 10, 0, 0, nullptr, SR);
+            CHECK(display(e2, "Dice Style") == "INDUSTRIAL" && display(e2, "Mutate Amount") == "30 %" && display(e2, "Seq Density") == "40 %" && display(e2, "Seq Chance") == "100 %", "new instance: dice defaults %s %s", display(e2, "Dice Style").c_str(), display(e2, "Mutate Amount").c_str());
+            e2->dispatcher(e2, 24, 0, (intptr_t)copy.size(), copy.data(), 0);
+            CHECK(display(e2, "Dice Style") == "NOISE" && display(e2, "Mutate Amount") == "70 %" && display(e2, "Lock Env") == "ON", "chunk loses the dice settings");
+            e2->dispatcher(e2, 1, 0, 0, nullptr, 0);
+            set(e, "Lock Env", 0); set(e, "Dice Style", 0); set(e, "Mutate Amount", 30);
+        }
     }
 
     /* 8. everything up: stays below 0 dBFS */
