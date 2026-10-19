@@ -26,5 +26,5 @@ jobs:
       host_test: bash vst/test.sh
       plugin_id: rattler
       license: MIT
-      about: Paraphonic swarm synthesizer in the manner of the Eowave Quadrantid Swarm - 8 oscillators (organ, strings, drone) with spread and wavefolder into two 12 dB filters, one VCA and one AR/AD envelope; 32 preset slots with LOAD/SAVE.
+      about: Paraphonic swarm synthesizer in the manner of the Eowave Quadrantid Swarm - 8 oscillator models with spread and character into two 12 dB filters, percussion, LFO, spring reverb, poly mode and an 8-step sequencer with step chance; RANDOM/MUTATE/UNDO by style (industrial, metal, noise, perc, drone); 32 preset slots with LOAD/SAVE.
       dry_run: ${{ inputs.dry_run }}
