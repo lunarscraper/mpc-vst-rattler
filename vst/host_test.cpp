@@ -505,6 +505,17 @@ int main(int argc, char **argv) {
         CHECK(hot < 1.0, "a roll above 0 dBFS");
         CHECK(nm == 8, "RANDOM reaches only %d models", nm);
         CHECK(e->getParameter(e, param(e, "Random")) == 0, "RANDOM does not read released");
+        /* the Force only sends the tap (1), never the release (0): every tap must still roll */
+        for (const char *btn : {"Random", "Mutate", "Dice Seq", "Undo"}) {
+            int moved = 0;
+            for (int r = 0; r < 4; r++) {
+                if (std::string(btn) == "Undo") { press(e, "Random"); tick(); }
+                std::vector<float> b = snap(e);
+                e->setParameter(e, param(e, btn), 1.0f); tick();
+                if (snap(e) != b) moved++;
+            }
+            CHECK(moved == 4, "%s: only %d of 4 taps without a release had an effect", btn, moved);
+        }
         /* locks */
         set(e, "Dice Style", 0);
         set(e, "Lock Filter", 1); set(e, "Lock Env", 1); set(e, "Lock Seq", 1);

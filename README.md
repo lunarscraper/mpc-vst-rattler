@@ -228,6 +228,8 @@ Am Swarm kommt man mit Modell, Spread, Character und den beiden Filtern schnell 
 - **Speichern:** Gefällt ein Wurf, auf der Seite PRESET mit SAVE auf einen Platz legen. Style, Amount, Locks und Density sind Arbeitsweise, kein Klang: Sie stehen im Projekt, aber nicht im Preset – ein LOAD lässt sie, wie sie sind.
 - **MIDI-CC 20–23** lösen aus, wenn der Wert die Mitte nach oben überschreitet (Taster mit 127/0 oder ein Fader über die Mitte). Ideal für OXI E16, Launch Control oder das iPad.
 - Plätze 25–32 haben Industrial-Werksklänge (RUST HIT, SHEET METAL, SERVO, STATIC BURST, PIPE KNOCK, GEAR GRIND, FACTORY HALL, SCRAP SEQ mit Chance 60 %), solange dort nichts gespeichert ist. Damit sind alle 32 Plätze vorbelegt; SAVE überschreibt wie gewohnt.
+- **Fix 0.2:** Die Tasten (RANDOM, MUTATE, UNDO, DICE SEQ, auch LOAD/SAVE) wirkten auf der Force nur einmal: Die Force meldet nach einem Tipp kein Loslassen, das Plugin wartete vergeblich darauf. Jetzt gibt das Plugin die Taste nach jedem Tipp selbst frei.
+- **Lesbarkeit 0.2:** Tasten tragen ihren Namen in echter Schrift (DejaVu Sans Bold, `vst/fonts/`, nur beim Bauen gebraucht), Regler- und Schalternamen sind 25 % größer (`label_scale=1.25`), Auswahllisten und Schalter auf SWARM, DICE und SEQ haben größere Überschriften.
 - Die Würfel laufen auf dem Audio-Thread am Blockanfang, ohne Speicheranforderung. Jede Instanz würfelt anders (Startwert aus Uhrzeit und Adresse); `RATTLER_SEED` setzt ihn fest (Offline-Test).
 
 ### Bauen und testen

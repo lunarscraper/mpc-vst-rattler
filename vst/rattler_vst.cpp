@@ -801,7 +801,10 @@ static void processReplacing(AEffect *e, float **in, float **out, int32_t n) {
     }
     bool any = false;
     for (int i = 0; i < NPARAMS; i++) {
-        if (w->release[i]) { w->release[i] = 0; any = true; w->master(&w->fx, audioMasterAutomate, i, 0, 0, 0.0f); }
+        /* a trigger reports itself released to the host - and is released here too: the Force
+         * doesn't send setParameter(0) after a tap, so without this the next tap would not be a
+         * rising edge and every button would work only once */
+        if (w->release[i]) { w->release[i] = 0; w->down[i] = false; any = true; w->master(&w->fx, audioMasterAutomate, i, 0, 0, 0.0f); }
         if (!w->notify[i].exchange(0)) continue;
         any = true;
         w->master(&w->fx, audioMasterAutomate, i, 0, 0, w->cache[i].load());
